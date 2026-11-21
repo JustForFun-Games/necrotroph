@@ -1,0 +1,31 @@
+# Puts the website on GitHub Pages every time the private repository publishes: the store page with privacy and
+# support pages, or the game itself when app.json says "web": "full".
+name: Website
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Pick the folder
+        id: dir
+        run: if [ -d site ]; then echo "path=site" >> "$GITHUB_OUTPUT"; else echo "path=www" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ steps.dir.outputs.path }}
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,43 @@
+# Uploads the App Store listing (every language) and screenshots. Tick "submit" to also send this version, with the
+# newest TestFlight build, to App Review. Runs on Linux: no Mac minutes used.
+name: App Store · listing and review
+on:
+  workflow_dispatch:
+    inputs:
+      submit:
+        description: Submit for App Review after uploading
+        type: boolean
+        default: false
+      auto_release:
+        description: Release to the store as soon as Apple approves
+        type: boolean
+        default: false
+jobs:
+  listing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the secrets
+        env:
+          A: ${{ secrets.ASC_KEY_ID }}
+          B: ${{ secrets.ASC_ISSUER_ID }}
+          C: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -z "$A" ] || [ -z "$B" ] || [ -z "$C" ]; then echo "::error::Missing the App Store Connect key (GitMobile → Studio)"; exit 1; fi
+      - name: Upload
+        working-directory: app
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          REVIEW_FIRST_NAME: ${{ secrets.REVIEW_FIRST_NAME }}
+          REVIEW_LAST_NAME: ${{ secrets.REVIEW_LAST_NAME }}
+          REVIEW_PHONE: ${{ secrets.REVIEW_PHONE }}
+          REVIEW_EMAIL: ${{ secrets.REVIEW_EMAIL }}
+          SUBMIT: ${{ inputs.submit }}
+          AUTO_RELEASE: ${{ inputs.auto_release }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+          FASTLANE_HIDE_CHANGELOG: '1'
+        run: |
+          sudo gem install fastlane -N --quiet
+          fastlane ios listing

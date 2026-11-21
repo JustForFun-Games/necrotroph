@@ -1,0 +1,39 @@
+{
+  "name": "Necrotroph",
+  "shortName": "Necrotroph",
+  "slug": "necrotroph",
+  "appId": "com.jacorgh.necrotroph",
+  "version": "1.0.0",
+  "copyright": "© 2026 jacorGH",
+  "developer": "Jacob Cooper",
+  "supportEmail": "jacoblc22@gmail.com",
+  "web": "landing",
+  "orientation": "portrait",
+  "colors": {
+    "background": "#17140f",
+    "accent": "#e0b252"
+  },
+  "languages": {
+    "en": {
+      "apple": "en-US",
+      "google": "en-US"
+    }
+  },
+  "plugins": [
+    "@capacitor/haptics",
+    "@capacitor/app",
+    "@capacitor/preferences",
+    "@capacitor/status-bar",
+    "@capacitor/splash-screen",
+    "@capacitor-community/keep-awake"
+  ],
+  "apple": {
+    "primaryCategory": "GAMES",
+    "secondaryCategory": "",
+    "appStoreUrl": ""
+  },
+  "google": {
+    "playUrl": ""
+  },
+  "domain": ""
+}

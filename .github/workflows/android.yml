@@ -1,0 +1,104 @@
+# Builds the Android app: a signed .aab for Google Play and a signed .apk to install on a phone (download them from the
+# run's Artifacts). Choose "internal" to also send the .aab to Google Play's internal testing track.
+# The first .aab must be uploaded by hand in Play Console (Google's rule); after that, this does it.
+name: Android · build
+on:
+  workflow_dispatch:
+    inputs:
+      play:
+        description: Send to Google Play
+        type: choice
+        options: [none, internal, alpha, beta, production]
+        default: none
+      status:
+        description: Release status on Google Play (draft until the app has been published once)
+        type: choice
+        options: [draft, completed]
+        default: draft
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Check the secrets
+        env:
+          PW: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          K: ${{ secrets.GAME_KEY }}
+          J: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          [ -f game.bin ] && [ -z "$K" ] && { echo "::error::Missing the GAME_KEY secret"; exit 1; }
+          [ -z "$PW" ] && { echo "::error::Missing the ANDROID_KEY_PASSWORD secret (GitMobile sets it when it creates the game)"; exit 1; }
+          [ -f keys/android-upload.jks.enc ] || { echo "::error::No upload key yet: run 'Android · make the upload key' once"; exit 1; }
+          if [ "${{ inputs.play }}" != "none" ] && [ -z "$J" ]; then echo "::error::Missing PLAY_SERVICE_ACCOUNT_JSON (GitMobile → Studio)"; exit 1; fi
+      - name: Unpack the game
+        working-directory: app
+        env:
+          GAME_KEY: ${{ secrets.GAME_KEY }}
+        run: node scripts/unpack-game.mjs
+      - name: Install Capacitor
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: Make the Android project
+        working-directory: app
+        run: |
+          npx cap add android
+          mkdir -p assets
+          cp icon-1024.png assets/icon-only.png
+          cp icon-1024.png assets/logo.png
+          BG=$(node -p "require('./app.json').colors?.background || '#000000'")
+          npx @capacitor/assets generate --android --iconBackgroundColor "$BG" --splashBackgroundColor "$BG" --splashBackgroundColorDark "$BG"
+          VERSION=$(node -p "require('./app.json').version")
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]*\"/versionName \"$VERSION\"/" android/app/build.gradle
+          ORIENT=$(node -p "require('./app.json').orientation")
+          if [ "$ORIENT" = portrait ]; then sed -i -E 's#(android:name="[^"]*MainActivity")#\1 android:screenOrientation="portrait"#' android/app/src/main/AndroidManifest.xml; fi
+          if [ "$ORIENT" = landscape ]; then sed -i -E 's#(android:name="[^"]*MainActivity")#\1 android:screenOrientation="sensorLandscape"#' android/app/src/main/AndroidManifest.xml; fi
+          npx cap sync android
+      - name: Build
+        working-directory: app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon bundleRelease assembleRelease
+      - name: Sign
+        working-directory: app
+        env:
+          PW: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p out
+          SLUG=$(node -p "require('./app.json').slug")
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 250000 -in ../keys/android-upload.jks.enc -out upload.jks -pass env:PW
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore upload.jks -storepass "$PW" -keypass "$PW" \
+            -signedjar out/$SLUG-${{ github.run_number }}.aab android/app/build/outputs/bundle/release/app-release.aab upload
+          "$BT/zipalign" -f -p 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          "$BT/apksigner" sign --ks upload.jks --ks-pass env:PW --key-pass env:PW --ks-key-alias upload --out out/$SLUG-${{ github.run_number }}.apk aligned.apk
+          rm -f upload.jks aligned.apk
+          ls -la out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: apk-${{ github.run_number }}
+          path: app/out/*.apk
+          retention-days: 30
+      - uses: actions/upload-artifact@v5
+        with:
+          name: google-play-${{ github.run_number }}
+          path: app/out/*.aab
+          retention-days: 30
+      - name: Send to Google Play
+        if: inputs.play != 'none'
+        working-directory: app
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          TRACK: ${{ inputs.play }}
+          STATUS: ${{ inputs.status }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+        run: |
+          export AAB=$(ls out/*.aab)
+          sudo gem install fastlane -N --quiet
+          fastlane android upload

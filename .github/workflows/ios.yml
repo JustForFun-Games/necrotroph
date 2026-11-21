@@ -1,0 +1,97 @@
+# Builds the iPhone app on GitHub's Mac and sends it to TestFlight. The store keys come from the organization's
+# secrets (set once in GitMobile → Studio); GAME_KEY is this game's own secret.
+name: iPhone · build for TestFlight
+on:
+  workflow_dispatch:
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use the newest Xcode (the App Store needs Xcode 26 or later)
+        run: |
+          X=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null | grep -v -i beta | sort -V | tail -1)
+          if [ -z "$X" ]; then echo "::error::No Xcode 26 on this runner. Change runs-on to a newer macOS image (for example macos-26)."; ls /Applications | grep Xcode; exit 1; fi
+          sudo xcode-select -s "$X/Contents/Developer"
+          xcodebuild -version
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Check the secrets
+        env:
+          A: ${{ secrets.ASC_KEY_ID }}
+          B: ${{ secrets.ASC_ISSUER_ID }}
+          C: ${{ secrets.ASC_KEY_P8 }}
+          D: ${{ secrets.APPLE_TEAM_ID }}
+          E: ${{ secrets.MATCH_GIT_URL }}
+          F: ${{ secrets.MATCH_GIT_TOKEN }}
+          G: ${{ secrets.MATCH_PASSWORD }}
+          K: ${{ secrets.GAME_KEY }}
+        run: |
+          miss=""
+          [ -z "$A" ] && miss="$miss ASC_KEY_ID"; [ -z "$B" ] && miss="$miss ASC_ISSUER_ID"; [ -z "$C" ] && miss="$miss ASC_KEY_P8"
+          [ -z "$D" ] && miss="$miss APPLE_TEAM_ID"; [ -z "$E" ] && miss="$miss MATCH_GIT_URL"; [ -z "$F" ] && miss="$miss MATCH_GIT_TOKEN"; [ -z "$G" ] && miss="$miss MATCH_PASSWORD"
+          [ -f game.bin ] && [ -z "$K" ] && miss="$miss GAME_KEY"
+          if [ -n "$miss" ]; then echo "::error::Missing secrets:$miss (GitMobile → Studio sets the store keys)"; exit 1; fi
+      - name: Unpack the game
+        working-directory: app
+        env:
+          GAME_KEY: ${{ secrets.GAME_KEY }}
+        run: node scripts/unpack-game.mjs
+      - name: Install Capacitor
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: Make the iPhone project
+        working-directory: app
+        run: |
+          npx cap add ios
+          mkdir -p assets
+          cp icon-1024.png assets/icon-only.png
+          cp icon-1024.png assets/logo.png
+          BG=$(node -p "require('./app.json').colors?.background || '#000000'")
+          npx @capacitor/assets generate --ios --iconBackgroundColor "$BG" --iconBackgroundColorDark "$BG" --splashBackgroundColor "$BG" --splashBackgroundColorDark "$BG"
+          npx cap sync ios
+          P=ios/App/App/Info.plist
+          NAME=$(node -p "const a=require('./app.json'); a.shortName || a.name")
+          ORIENT=$(node -p "require('./app.json').orientation")
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" $P || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" $P
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $NAME" $P || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $NAME" $P
+          /usr/libexec/PlistBuddy -c "Add :UIStatusBarStyle string UIStatusBarStyleLightContent" $P || true
+          # an iPhone app; an iPad runs it too, in iPhone size, so the store needs no iPad screenshots
+          /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations" $P || true
+          /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations~ipad" $P || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations array" $P
+          i=0
+          for o in UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight; do
+            case "$ORIENT:$o" in portrait:*Landscape*|landscape:*Portrait) continue;; esac
+            /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:$i string $o" $P; i=$((i+1))
+          done
+          /usr/libexec/PlistBuddy -c "Add :UIRequiresFullScreen bool true" $P || /usr/libexec/PlistBuddy -c "Set :UIRequiresFullScreen true" $P
+      - name: Build and send to TestFlight
+        working-directory: app
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_GIT_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
+          MATCH_GIT_USER: ${{ secrets.MATCH_GIT_USER }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+          FASTLANE_HIDE_CHANGELOG: '1'
+        run: |
+          export MATCH_GIT_BASIC_AUTHORIZATION=$(printf '%s:%s' "${MATCH_GIT_USER:-x-access-token}" "$MATCH_GIT_TOKEN" | base64 | tr -d '\n')
+          command -v fastlane >/dev/null || brew install fastlane
+          fastlane ios beta
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: ios-${{ github.run_number }}
+          path: |
+            app/build/*.ipa
+            ~/Library/Logs/gym/*.log
+          if-no-files-found: ignore
+          retention-days: 14

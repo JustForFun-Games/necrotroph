@@ -1,0 +1,40 @@
+# Uploads the Google Play listing (every language), screenshots and feature graphic, or moves a release from one
+# track to another (for example internal testing → production).
+name: Google Play · listing and release
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        options: [listing, promote]
+        default: listing
+      from:
+        description: Promote from track
+        type: choice
+        options: [internal, alpha, beta]
+        default: internal
+      to:
+        description: Promote to track
+        type: choice
+        options: [alpha, beta, production]
+        default: production
+jobs:
+  play:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the secret
+        env:
+          J: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: if [ -z "$J" ]; then echo "::error::Missing PLAY_SERVICE_ACCOUNT_JSON (GitMobile → Studio)"; exit 1; fi
+      - name: Run
+        working-directory: app
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+        run: |
+          sudo gem install fastlane -N --quiet
+          fastlane android ${{ inputs.action }}

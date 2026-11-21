@@ -1,0 +1,155 @@
+# Store automation for this game. The workflows in .github/workflows run these lanes; nothing here needs a Mac of your own.
+#   ios beta        build the iPhone app and send it to TestFlight (registers the bundle ID with Apple the first time)
+#   ios listing     upload the App Store listing and screenshots; SUBMIT=true also sends the version for review
+#   android upload  send a built .aab to a Google Play track (TRACK, STATUS)
+#   android listing upload the Google Play listing, screenshots and feature graphic
+#   android promote move the release on one track to another (FROM → TO), e.g. internal → production
+require "json"
+
+APP = JSON.parse(File.read(File.expand_path("../app.json", __dir__)))
+APP_ID = APP.fetch("appId")
+
+def asc_key
+  app_store_connect_api_key(
+    key_id: ENV.fetch("ASC_KEY_ID"),
+    issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+    key_content: ENV.fetch("ASC_KEY_P8"),
+    duration: 1200
+  )
+end
+
+def asc_login
+  Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
+    key_id: ENV.fetch("ASC_KEY_ID"), issuer_id: ENV.fetch("ASC_ISSUER_ID"), key: ENV.fetch("ASC_KEY_P8")
+  )
+end
+
+def need_app_record!
+  return if Spaceship::ConnectAPI::App.find(APP_ID)
+  UI.user_error!("App Store Connect has no app with the bundle ID #{APP_ID} yet. Create it once: Apps → + → New App, " \
+                 "choose that bundle ID, then run this again. (Apple doesn't let the API create apps.)")
+end
+
+platform :ios do
+  lane :beta do
+    setup_ci
+    key = asc_key
+    asc_login
+    unless Spaceship::ConnectAPI::BundleId.find(APP_ID)
+      Spaceship::ConnectAPI::BundleId.create(name: APP.fetch("name"), identifier: APP_ID, platform: "IOS")
+      UI.success("Registered the bundle ID #{APP_ID} with Apple")
+    end
+    match(
+      type: "appstore",
+      app_identifier: APP_ID,
+      api_key: key,
+      team_id: ENV.fetch("APPLE_TEAM_ID"),
+      git_url: ENV.fetch("MATCH_GIT_URL"),
+      git_basic_authorization: ENV.fetch("MATCH_GIT_BASIC_AUTHORIZATION"),
+      readonly: false
+    )
+    profile = ENV.fetch("sigh_#{APP_ID}_appstore_profile-name")
+    update_code_signing_settings(
+      path: "ios/App/App.xcodeproj",
+      use_automatic_signing: false,
+      team_id: ENV.fetch("APPLE_TEAM_ID"),
+      targets: ["App"],
+      bundle_identifier: APP_ID,
+      code_sign_identity: "Apple Distribution",
+      profile_name: profile
+    )
+    build_app(
+      project: "ios/App/App.xcodeproj",
+      scheme: "App",
+      configuration: "Release",
+      export_method: "app-store",
+      export_options: { provisioningProfiles: { APP_ID => profile } },
+      xcargs: "CURRENT_PROJECT_VERSION=#{ENV.fetch('BUILD_NUMBER')} MARKETING_VERSION=#{APP.fetch('version')} TARGETED_DEVICE_FAMILY=1",
+      output_directory: "build",
+      output_name: "#{APP.fetch('slug')}.ipa"
+    )
+    need_app_record!
+    upload_to_testflight(api_key: key, skip_waiting_for_build_processing: true)
+  end
+
+  lane :listing do
+    key = asc_key
+    asc_login
+    need_app_record!
+    shots = Dir.glob("../store/apple/screenshots/**/*.{png,jpg,jpeg}")
+    review = {}
+    if ENV["REVIEW_EMAIL"].to_s != ""
+      review = {
+        first_name: ENV["REVIEW_FIRST_NAME"].to_s, last_name: ENV["REVIEW_LAST_NAME"].to_s,
+        phone_number: ENV["REVIEW_PHONE"].to_s, email_address: ENV["REVIEW_EMAIL"].to_s,
+        demo_user: "", demo_password: "", notes: File.read("../store/apple/review-notes.txt").strip
+      }
+    end
+    deliver(
+      api_key: key,
+      app_identifier: APP_ID,
+      app_version: APP.fetch("version"),
+      platform: "ios",
+      skip_binary_upload: true,
+      metadata_path: "../store/apple/metadata",
+      screenshots_path: "../store/apple/screenshots",
+      skip_screenshots: shots.empty?,          # never wipe the store's screenshots when none were added here
+      overwrite_screenshots: !shots.empty?,
+      app_review_information: review,
+      force: true,
+      run_precheck_before_submit: false,
+      precheck_include_in_app_purchases: false,
+      submit_for_review: ENV["SUBMIT"] == "true",
+      automatic_release: ENV["AUTO_RELEASE"] == "true",
+      submission_information: { add_id_info_uses_idfa: false, export_compliance_uses_encryption: false }
+    )
+  end
+end
+
+platform :android do
+  json_key = -> { ENV.fetch("PLAY_SERVICE_ACCOUNT_JSON") }
+
+  lane :upload do
+    upload_to_play_store(
+      package_name: APP_ID,
+      json_key_data: json_key.call,
+      track: ENV.fetch("TRACK", "internal"),
+      release_status: ENV.fetch("STATUS", "draft"),
+      aab: ENV.fetch("AAB"),
+      version_name: APP.fetch("version"),
+      metadata_path: "../store/google",
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  lane :listing do
+    upload_to_play_store(
+      package_name: APP_ID,
+      json_key_data: json_key.call,
+      metadata_path: "../store/google",
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_changelogs: true,
+      sync_image_upload: true
+    )
+  end
+
+  lane :promote do
+    upload_to_play_store(
+      package_name: APP_ID,
+      json_key_data: json_key.call,
+      track: ENV.fetch("FROM", "internal"),
+      track_promote_to: ENV.fetch("TO", "production"),
+      release_status: ENV.fetch("STATUS", "completed"),
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true
+    )
+  end
+end

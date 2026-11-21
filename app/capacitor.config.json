@@ -1,0 +1,21 @@
+{
+  "appId": "com.jacorgh.necrotroph",
+  "appName": "Necrotroph",
+  "webDir": "www",
+  "backgroundColor": "#17140f",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#17140f"
+  },
+  "android": {
+    "backgroundColor": "#17140f"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 900,
+      "launchAutoHide": true,
+      "backgroundColor": "#17140f",
+      "showSpinner": false
+    }
+  }
+}
